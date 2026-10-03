@@ -152,3 +152,27 @@ else:
         "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
     }
 
+# Publication monetization pricing (HTG)
+from decimal import Decimal
+PUBLICATION_PRICE_HTG = Decimal(os.getenv("PUBLICATION_PRICE_HTG", "500.00"))
+DEFAULT_PUBLICATION_CURRENCY = "HTG"
+
+# MonCash Payment Gateway configuration
+MONCASH_MODE = os.getenv("MONCASH_MODE", "sandbox").lower()
+MONCASH_CLIENT_ID = os.getenv("MONCASH_CLIENT_ID", "")
+MONCASH_CLIENT_SECRET = os.getenv("MONCASH_CLIENT_SECRET", "")
+MONCASH_API_URL = os.getenv(
+    "MONCASH_API_URL",
+    "https://sandbox.moncashbutton.digicelgroup.com/Api"
+    if MONCASH_MODE == "sandbox"
+    else "https://moncashbutton.digicelgroup.com/Api",
+)
+MONCASH_GATEWAY_URL = os.getenv(
+    "MONCASH_GATEWAY_URL",
+    "https://sandbox.moncashbutton.digicelgroup.com/Moncash-middleware"
+    if MONCASH_MODE == "sandbox"
+    else "https://moncashbutton.digicelgroup.com/Moncash-middleware",
+)
+MONCASH_TIMEOUT_SECONDS = int(os.getenv("MONCASH_TIMEOUT_SECONDS", "15"))
+
+

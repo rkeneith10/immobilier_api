@@ -99,6 +99,7 @@ class ProviderVerification:
     currency: str
     is_paid: bool
     paid_at: datetime | None = None
+    provider_transaction_id: str | None = None
 
 
 class PaymentService(ABC):
@@ -140,12 +141,15 @@ class PaymentService(ABC):
 
     def confirm_payment(self, payment_id):
         # Network verification is deliberately outside the database transaction.
-        payment = Payment.objects.select_related("subscription", "promotion").get(pk=payment_id)
+        payment = Payment.objects.select_related("subscription", "promotion", "property").get(pk=payment_id)
         if payment.status != Payment.Status.PENDING:
             return payment
         result = self.verify_with_provider(payment)
         if result is None:
             return payment
+        if payment.provider_payment_id is None and result.provider_payment_id:
+            payment.provider_payment_id = result.provider_payment_id
+            payment.save(update_fields=("provider_payment_id", "updated_at"))
         self._validate_provider_result(payment, result)
 
         with transaction.atomic():
@@ -154,7 +158,11 @@ class PaymentService(ABC):
                 return payment
             payment.status = Payment.Status.PAID if result.is_paid else Payment.Status.FAILED
             payment.paid_at = (result.paid_at or timezone.now()) if result.is_paid else None
-            payment.save(update_fields=("status", "paid_at", "updated_at"))
+            update_fields = ["status", "paid_at", "updated_at"]
+            if getattr(result, "provider_transaction_id", None):
+                payment.provider_transaction_id = result.provider_transaction_id
+                update_fields.append("provider_transaction_id")
+            payment.save(update_fields=tuple(update_fields))
 
             if result.is_paid:
                 if payment.subscription_id:
@@ -166,14 +174,20 @@ class PaymentService(ABC):
                     promotion = PropertyPromotion.objects.select_for_update().get(pk=payment.promotion_id)
                     promotion.status = PropertyPromotion.Status.ACTIVE
                     promotion.save(update_fields=("status", "updated_at"))
-                invoice = Invoice.objects.select_for_update().get(payment=payment)
-                invoice.status = Invoice.Status.PAID
-                invoice.paid_at = payment.paid_at
-                invoice.save(update_fields=("status", "paid_at", "updated_at"))
+                try:
+                    invoice = Invoice.objects.select_for_update().get(payment=payment)
+                    invoice.status = Invoice.Status.PAID
+                    invoice.paid_at = payment.paid_at
+                    invoice.save(update_fields=("status", "paid_at", "updated_at"))
+                except Invoice.DoesNotExist:
+                    pass
             else:
-                invoice = Invoice.objects.select_for_update().get(payment=payment)
-                invoice.status = Invoice.Status.VOID
-                invoice.save(update_fields=("status", "updated_at"))
+                try:
+                    invoice = Invoice.objects.select_for_update().get(payment=payment)
+                    invoice.status = Invoice.Status.VOID
+                    invoice.save(update_fields=("status", "updated_at"))
+                except Invoice.DoesNotExist:
+                    pass
             return payment
 
     @staticmethod
@@ -276,6 +290,35 @@ def create_promotion_payment(*, promotion, provider, amount, currency):
 
 
 @transaction.atomic
+def create_property_publication_payment(*, property_obj, provider, amount, currency):
+    from apps.properties.models import Property
+
+    property_obj = Property.objects.select_for_update().select_related("owner").get(pk=property_obj.pk)
+    amount = Decimal(amount)
+    if amount <= 0:
+        raise MonetizationError("Le montant d’un paiement de publication doit être positif.")
+    if Payment.objects.filter(property=property_obj, status=Payment.Status.PAID).exists():
+        raise MonetizationError("Cette propriété a déjà un paiement confirmé.")
+    payment = Payment.objects.create(
+        user=property_obj.owner,
+        property=property_obj,
+        provider=provider,
+        amount=amount,
+        currency=currency,
+        status=Payment.Status.PENDING,
+    )
+    Invoice.objects.create(
+        payment=payment,
+        user=payment.user,
+        amount=payment.amount,
+        currency=payment.currency,
+        status=Invoice.Status.ISSUED,
+        issued_at=timezone.now(),
+    )
+    return payment
+
+
+@transaction.atomic
 def create_property_promotion(*, property_obj, actor, promotion_type, starts_at, ends_at):
     property_obj = Property.objects.select_for_update().get(pk=property_obj.pk)
     if property_obj.status != Property.Status.PUBLISHED:
@@ -294,3 +337,105 @@ def create_property_promotion(*, property_obj, actor, promotion_type, starts_at,
         starts_at=starts_at,
         ends_at=ends_at,
     )
+
+
+FREE_PUBLICATIONS_LIMIT = 1
+DEFAULT_PUBLICATION_CURRENCY = "HTG"
+
+
+@dataclass(frozen=True)
+class PublicationEligibility:
+    property_id: str
+    is_free: bool
+    requires_payment: bool
+    already_paid: bool
+    free_publications_limit: int
+    free_publications_consumed: int
+    free_remaining: int
+    amount: Decimal | None
+    currency: str
+
+
+def get_publication_price() -> Decimal:
+    """Return the configured publication price in HTG."""
+    from django.conf import settings
+    return Decimal(str(getattr(settings, "PUBLICATION_PRICE_HTG", "500.00")))
+
+
+def check_publication_eligibility(property_obj, user=None) -> PublicationEligibility:
+    """Evaluate whether a property listing can be published for free or requires payment.
+
+    Official Business Rules:
+    1. FREE_PUBLICATIONS_LIMIT = 1 free publication per OWNER.
+    2. An owner's first eligible publication is free.
+    3. Starting from the 2nd publication, payment is required (via MonCash).
+    4. Drafts, rejected, or un-published listings never consume a free publication slot.
+    5. A property already published in its lifecycle (`published_at IS NOT NULL`) does not
+       trigger a new payment on edits or resubmissions.
+    6. A property with a Payment in `PAID` status is considered paid and never billed twice.
+    """
+    owner = property_obj.owner
+
+    # Check if this specific property has already been paid for
+    already_paid = Payment.objects.filter(
+        property=property_obj,
+        status=Payment.Status.PAID,
+    ).exists()
+
+    # Check if this property was already published in its lifecycle
+    already_published = property_obj.published_at is not None
+
+    # Count free publications already consumed (published) or currently in review without payment
+    # Published properties that were paid do not count towards the free limit.
+    consumed_published_qs = Property.objects.filter(
+        owner=owner,
+        published_at__isnull=False,
+    ).exclude(payments__status=Payment.Status.PAID)
+
+    pending_free_qs = Property.objects.filter(
+        owner=owner,
+        status=Property.Status.PENDING_REVIEW,
+        published_at__isnull=True,
+    ).exclude(payments__status=Payment.Status.PAID)
+
+    if not already_published:
+        consumed_published_qs = consumed_published_qs.exclude(pk=property_obj.pk)
+        pending_free_qs = pending_free_qs.exclude(pk=property_obj.pk)
+
+    consumed_count = consumed_published_qs.distinct().count()
+    pending_count = pending_free_qs.distinct().count()
+
+    total_used_free = consumed_count + pending_count
+    free_consumed = min(FREE_PUBLICATIONS_LIMIT, total_used_free)
+    free_remaining = max(0, FREE_PUBLICATIONS_LIMIT - total_used_free)
+
+    # Determine eligibility flags
+    if already_paid:
+        is_free = False
+        requires_payment = False
+    elif already_published:
+        # Resubmission / update of an already published property
+        is_free = True
+        requires_payment = False
+    elif free_remaining > 0:
+        is_free = True
+        requires_payment = False
+    else:
+        is_free = False
+        requires_payment = True
+
+    amount = get_publication_price() if requires_payment else None
+
+    return PublicationEligibility(
+        property_id=str(property_obj.pk),
+        is_free=is_free,
+        requires_payment=requires_payment,
+        already_paid=already_paid,
+        free_publications_limit=FREE_PUBLICATIONS_LIMIT,
+        free_publications_consumed=free_consumed,
+        free_remaining=free_remaining,
+        amount=amount,
+        currency=DEFAULT_PUBLICATION_CURRENCY,
+    )
+
+

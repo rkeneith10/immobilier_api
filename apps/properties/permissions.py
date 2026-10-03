@@ -22,6 +22,14 @@ class PropertyPermission(BasePermission):
     contributor_roles = {"OWNER", "AGENT"}
 
     def has_permission(self, request, view):
+        action = getattr(view, "action", None)
+        if action in {"publication_eligibility", "initiate_publication_payment", "verify_publication_payment"}:
+            user = request.user
+            if not user or not user.is_authenticated or not user.is_active:
+                return False
+            role = getattr(user, "role", None)
+            return role in self.contributor_roles | {"ADMIN"}
+
         if request.method in SAFE_METHODS:
             return True
 
@@ -30,7 +38,6 @@ class PropertyPermission(BasePermission):
             return False
 
         role = getattr(user, "role", None)
-        action = getattr(view, "action", None)
         if action == "create":
             return role in self.contributor_roles
         if action in {"publish", "reject", "suspend"}:
@@ -42,6 +49,15 @@ class PropertyPermission(BasePermission):
         return role == "ADMIN"
 
     def has_object_permission(self, request, view, obj):
+        action = getattr(view, "action", None)
+        if action in {"publication_eligibility", "initiate_publication_payment", "verify_publication_payment"}:
+            user = request.user
+            if not user or not user.is_authenticated or not user.is_active:
+                return False
+            role = getattr(user, "role", None)
+            return role == "ADMIN" or obj.owner_id == user.pk
+
+
         if request.method in SAFE_METHODS:
             return True
         user = request.user
@@ -50,3 +66,4 @@ class PropertyPermission(BasePermission):
         if getattr(view, "action", None) in {"publish", "reject", "suspend"}:
             return getattr(user, "role", None) == "ADMIN"
         return getattr(user, "role", None) == "ADMIN" or obj.owner_id == user.pk
+

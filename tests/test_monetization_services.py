@@ -3,6 +3,7 @@ from decimal import Decimal
 
 import pytest
 from django.contrib.auth import get_user_model
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from apps.locations.models import Location
@@ -229,3 +230,149 @@ def test_promotion_payment_uses_verified_provider_result_to_activate_and_invoice
     assert service.confirm_payment(payment.pk).status == Payment.Status.PAID
     promotion.refresh_from_db()
     assert promotion.status == PropertyPromotion.Status.ACTIVE
+
+
+@pytest.mark.django_db
+def test_payment_purchase_constraints_valid_and_invalid(money_data):
+    data = money_data
+    user = data["user"]
+    prop = data["property"]
+    sub = Subscription.objects.create(
+        user=user, plan=data["pro"], status=Subscription.Status.PAST_DUE, starts_at=timezone.now()
+    )
+    promo = PropertyPromotion.objects.create(
+        property=prop,
+        promotion_type=PropertyPromotion.Type.FEATURED,
+        status=PropertyPromotion.Status.PENDING,
+        starts_at=timezone.now(),
+        ends_at=timezone.now() + timedelta(days=1),
+    )
+
+    # 1. Valid: Subscription only
+    pay_sub = Payment.objects.create(
+        user=user, subscription=sub, provider="test", amount="10.00", currency="USD"
+    )
+    assert pay_sub.subscription == sub
+    assert pay_sub.promotion is None
+    assert pay_sub.property is None
+    assert pay_sub.order_id.startswith("ORD-")
+
+    # 2. Valid: Promotion only
+    pay_promo = Payment.objects.create(
+        user=user, promotion=promo, provider="test", amount="15.00", currency="USD"
+    )
+    assert pay_promo.subscription is None
+    assert pay_promo.promotion == promo
+    assert pay_promo.property is None
+    assert pay_promo.order_id.startswith("ORD-")
+
+    # 3. Valid: Property only
+    pay_prop = Payment.objects.create(
+        user=user, property=prop, provider="test", amount="20.00", currency="USD"
+    )
+    assert pay_prop.subscription is None
+    assert pay_prop.promotion is None
+    assert pay_prop.property == prop
+    assert pay_prop.order_id.startswith("ORD-")
+
+    # Invalid: No purchase attached
+    with pytest.raises(IntegrityError):
+        with transaction.atomic():
+            Payment.objects.create(user=user, provider="test", amount="10.00", currency="USD")
+
+    # Invalid: Subscription + Property
+    with pytest.raises(IntegrityError):
+        with transaction.atomic():
+            Payment.objects.create(
+                user=user, subscription=sub, property=prop, provider="test", amount="10.00", currency="USD"
+            )
+
+    # Invalid: Promotion + Property
+    with pytest.raises(IntegrityError):
+        with transaction.atomic():
+            Payment.objects.create(
+                user=user, promotion=promo, property=prop, provider="test", amount="10.00", currency="USD"
+            )
+
+    # Invalid: All three
+    with pytest.raises(IntegrityError):
+        with transaction.atomic():
+            Payment.objects.create(
+                user=user, subscription=sub, promotion=promo, property=prop, provider="test", amount="10.00", currency="USD"
+            )
+
+
+@pytest.mark.django_db
+def test_property_payment_lifecycle_and_uniqueness(money_data):
+    data = money_data
+    user = data["user"]
+    prop = data["property"]
+
+    # Can have a PENDING payment
+    pay1 = Payment.objects.create(
+        user=user, property=prop, provider="test", amount="25.00", currency="USD", status=Payment.Status.PENDING
+    )
+    assert pay1.status == Payment.Status.PENDING
+
+    # If first attempt fails, can have another payment attempt (e.g. FAILED + PENDING)
+    pay1.status = Payment.Status.FAILED
+    pay1.save(update_fields=["status"])
+
+    pay2 = Payment.objects.create(
+        user=user, property=prop, provider="test", amount="25.00", currency="USD", status=Payment.Status.PENDING
+    )
+    assert pay2.status == Payment.Status.PENDING
+
+    # Mark pay2 as PAID
+    pay2.status = Payment.Status.PAID
+    pay2.paid_at = timezone.now()
+    pay2.save(update_fields=["status", "paid_at"])
+
+    # Cannot have a second PAID payment for the same property
+    with pytest.raises(IntegrityError):
+        with transaction.atomic():
+            Payment.objects.create(
+                user=user, property=prop, provider="test", amount="25.00", currency="USD", status=Payment.Status.PAID
+            )
+
+
+@pytest.mark.django_db
+def test_create_property_publication_payment_service(money_data):
+    from apps.monetization.services import create_property_publication_payment
+
+    data = money_data
+    prop = data["property"]
+
+    # 1. Create property publication payment via service
+    payment = create_property_publication_payment(
+        property_obj=prop, provider="fake-provider", amount="25.00", currency="USD"
+    )
+    assert payment.status == Payment.Status.PENDING
+    assert payment.property == prop
+    assert payment.user == prop.owner
+    assert payment.order_id.startswith("ORD-")
+    assert payment.invoice.status == Invoice.Status.ISSUED
+    assert payment.invoice.amount == Decimal("25.00")
+
+    # 2. Confirm payment with service
+    service = FakePaymentService()
+    service.start_payment(payment.pk)
+    payment.refresh_from_db()
+
+    service.result = ProviderVerification(
+        provider_payment_id=payment.provider_payment_id,
+        amount=payment.amount,
+        currency=payment.currency,
+        is_paid=True,
+        paid_at=timezone.now(),
+    )
+    confirmed = service.confirm_payment(payment.pk)
+    assert confirmed.status == Payment.Status.PAID
+    payment.invoice.refresh_from_db()
+    assert payment.invoice.status == Invoice.Status.PAID
+
+    # 3. Trying to create another publication payment for this property raises MonetizationError
+    with pytest.raises(MonetizationError, match="déjà un paiement confirmé"):
+        create_property_publication_payment(
+            property_obj=prop, provider="fake-provider", amount="25.00", currency="USD"
+        )

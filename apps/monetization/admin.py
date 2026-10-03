@@ -11,6 +11,25 @@ class PlanAdmin(admin.ModelAdmin):
 
 
 admin.site.register(Subscription)
-admin.site.register(Payment)
+
+
+@admin.register(Payment)
+class PaymentAdmin(admin.ModelAdmin):
+    list_display = (
+        "order_id",
+        "user",
+        "property",
+        "subscription",
+        "promotion",
+        "provider",
+        "amount",
+        "currency",
+        "status",
+        "created_at",
+    )
+    list_filter = ("status", "provider", "currency")
+    search_fields = ("order_id", "provider_payment_id", "provider_transaction_id", "user__email")
+
+
 admin.site.register(PropertyPromotion)
 admin.site.register(Invoice)

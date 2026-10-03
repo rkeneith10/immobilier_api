@@ -118,6 +118,10 @@ class PropertyPromotion(UUIDTimestampedModel):
         return f"{self.promotion_type} promotion for {self.property_id}"
 
 
+def generate_order_id():
+    return f"ORD-{uuid.uuid4().hex[:20].upper()}"
+
+
 class Payment(UUIDTimestampedModel):
     class Status(models.TextChoices):
         PENDING = "PENDING", "Pending"
@@ -131,8 +135,15 @@ class Payment(UUIDTimestampedModel):
     promotion = models.ForeignKey(
         PropertyPromotion, null=True, blank=True, on_delete=models.PROTECT, related_name="payments"
     )
+    property = models.ForeignKey(
+        "properties.Property", null=True, blank=True, on_delete=models.PROTECT, related_name="payments"
+    )
+    order_id = models.CharField(
+        max_length=64, unique=True, null=True, blank=True, editable=False
+    )
     provider = models.CharField(max_length=40)
     provider_payment_id = models.CharField(max_length=160, null=True, blank=True)
+    provider_transaction_id = models.CharField(max_length=160, null=True, blank=True)
     amount = models.DecimalField(max_digits=12, decimal_places=2, validators=[MinValueValidator(0)])
     currency = models.CharField(
         max_length=3,
@@ -146,8 +157,11 @@ class Payment(UUIDTimestampedModel):
         constraints = [
             models.CheckConstraint(condition=Q(amount__gte=0), name="payment_amount_nonnegative"),
             models.CheckConstraint(
-                condition=(Q(subscription__isnull=False, promotion__isnull=True)
-                           | Q(subscription__isnull=True, promotion__isnull=False)),
+                condition=(
+                    Q(subscription__isnull=False, promotion__isnull=True, property__isnull=True)
+                    | Q(subscription__isnull=True, promotion__isnull=False, property__isnull=True)
+                    | Q(subscription__isnull=True, promotion__isnull=True, property__isnull=False)
+                ),
                 name="payment_exactly_one_purchase",
             ),
             models.UniqueConstraint(
@@ -155,14 +169,25 @@ class Payment(UUIDTimestampedModel):
                 condition=Q(provider_payment_id__isnull=False) & ~Q(provider_payment_id=""),
                 name="provider_payment_reference_unique",
             ),
+            models.UniqueConstraint(
+                fields=("property",),
+                condition=Q(status="PAID", property__isnull=False),
+                name="unique_paid_payment_per_property",
+            ),
         ]
         indexes = [
             models.Index(fields=("status", "-created_at"), name="payment_status_created_idx"),
             models.Index(fields=("user", "-created_at"), name="payment_user_created_idx"),
+            models.Index(fields=("property", "-created_at"), name="payment_property_created_idx"),
         ]
 
+    def save(self, *args, **kwargs):
+        if not self.order_id:
+            self.order_id = generate_order_id()
+        super().save(*args, **kwargs)
+
     def __str__(self):
-        return f"{self.provider} payment {self.pk} ({self.status})"
+        return f"{self.provider} payment {self.order_id} ({self.status})"
 
 
 def generate_invoice_number():
