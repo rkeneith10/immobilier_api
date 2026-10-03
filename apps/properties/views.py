@@ -188,10 +188,15 @@ class PropertyViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         from apps.monetization.services import SubscriptionLimitReached, SubscriptionService
 
-        try:
-            SubscriptionService.ensure_property_capacity(self.request.user)
-        except SubscriptionLimitReached as exc:
-            raise ValidationError({"plan": str(exc)}) from exc
+        # Les utilisateurs du plan standard (FREE) monétisent à la publication via MonCash
+        # (1ère publication gratuite, puis paiement requis de 500 HTG à chaque nouvelle annonce).
+        # Ils peuvent donc créer et préparer leurs brouillons librement.
+        plan = SubscriptionService.get_effective_plan(self.request.user)
+        if plan and plan.code != "FREE":
+            try:
+                SubscriptionService.ensure_property_capacity(self.request.user)
+            except SubscriptionLimitReached as exc:
+                raise ValidationError({"plan": str(exc)}) from exc
         serializer.save(owner=self.request.user)
 
     def retrieve(self, request, *args, **kwargs):

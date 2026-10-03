@@ -143,11 +143,13 @@ def test_free_users_cannot_create_promotions_but_entitled_plan_and_admin_can(sub
 
 
 @pytest.mark.django_db
-def test_property_api_enforces_free_quota_and_returns_validation_error(subscription_data):
+def test_property_api_enforces_paid_subscription_quota(subscription_data):
     data = subscription_data
+    # Active un abonnement PRO avec quota de 5 annonces
+    activate_plan(data, data["pro"])
     client = APIClient()
     client.force_authenticate(data["owner"])
-    for index in range(2):
+    for index in range(5):
         response = client.post("/api/properties/", {
             "title": f"Quota property {index}", "slug": f"quota-api-{index}",
             "property_type": str(data["kind"].pk), "listing_type": "RENT", "price": "100",
@@ -155,9 +157,38 @@ def test_property_api_enforces_free_quota_and_returns_validation_error(subscript
         }, format="json")
         assert response.status_code == 201
     denied = client.post("/api/properties/", {
-        "title": "Quota property 3", "slug": "quota-api-3", "property_type": str(data["kind"].pk),
+        "title": "Quota property 6", "slug": "quota-api-6", "property_type": str(data["kind"].pk),
         "listing_type": "RENT", "price": "100", "currency": "USD",
         "location": str(data["location"].pk),
     }, format="json")
     assert denied.status_code == 400
     assert "plan" in denied.data
+
+
+@pytest.mark.django_db
+def test_free_tier_allows_draft_creation_and_enforces_moncash_at_publication(subscription_data):
+    data = subscription_data
+    client = APIClient()
+    client.force_authenticate(data["owner"])
+    # Le propriétaire sans abonnement peut créer plus de 2 brouillons
+    created_ids = []
+    for index in range(3):
+        response = client.post("/api/properties/", {
+            "title": f"Free tier draft {index}", "slug": f"free-draft-{index}",
+            "property_type": str(data["kind"].pk), "listing_type": "RENT", "price": "100",
+            "currency": "USD", "location": str(data["location"].pk),
+        }, format="json")
+        assert response.status_code == 201
+        created_ids.append(response.data["id"])
+
+    # 1ère annonce soumise -> gratuite (200 OK -> PENDING_REVIEW)
+    first_submit = client.post(f"/api/properties/{created_ids[0]}/submit-for-review/")
+    assert first_submit.status_code == 200
+    assert first_submit.data["status"] == Property.Status.PENDING_REVIEW
+
+    # 2ème annonce soumise -> PAIEMENT MONCASH REQUIS (402 Payment Required)
+    second_submit = client.post(f"/api/properties/{created_ids[1]}/submit-for-review/")
+    assert second_submit.status_code == 402
+    assert second_submit.data["requires_payment"] is True
+    assert second_submit.data["amount"] == "500.00"
+
