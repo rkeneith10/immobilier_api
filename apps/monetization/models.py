@@ -142,8 +142,8 @@ class Payment(UUIDTimestampedModel):
         max_length=64, unique=True, null=True, blank=True, editable=False
     )
     provider = models.CharField(max_length=40)
-    provider_payment_id = models.CharField(max_length=160, null=True, blank=True)
-    provider_transaction_id = models.CharField(max_length=160, null=True, blank=True)
+    provider_payment_id = models.CharField(max_length=1024, null=True, blank=True)
+    provider_transaction_id = models.CharField(max_length=512, null=True, blank=True)
     amount = models.DecimalField(max_digits=12, decimal_places=2, validators=[MinValueValidator(0)])
     currency = models.CharField(
         max_length=3,
