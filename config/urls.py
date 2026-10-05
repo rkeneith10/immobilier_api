@@ -25,6 +25,7 @@ urlpatterns = [
     path("api/visit-requests/", include("apps.interactions.visit_urls")),
     path("api/notifications/", include("apps.notifications.urls")),
     path("api/reports/", include("apps.interactions.report_urls")),
+    path("api/moncash/", include("apps.monetization.urls")),
     path("api/admin/", include("apps.common.admin_urls")),
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
     path("api/docs/", SpectacularSwaggerView.as_view(url_name="schema"), name="swagger-ui"),

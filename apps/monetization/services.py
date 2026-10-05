@@ -439,3 +439,58 @@ def check_publication_eligibility(property_obj, user=None) -> PublicationEligibi
     )
 
 
+def sync_all_pending_moncash_payments(*, max_age_hours=48, min_age_seconds=30) -> dict:
+    """Vérifie et synchronise tous les paiements PENDING MonCash auprès de la passerelle.
+
+    Permet de rattraper automatiquement les transactions abandonnées par les utilisateurs
+    qui ont fermé leur navigateur après le paiement sans revenir sur le site.
+    """
+    from datetime import timedelta
+    from .moncash_service import MonCashService, MonCashError
+    import logging
+
+    now = timezone.now()
+    earliest = now - timedelta(hours=max_age_hours)
+    latest = now - timedelta(seconds=min_age_seconds)
+
+    pending_payments = (
+        Payment.objects.filter(
+            provider="MONCASH",
+            status=Payment.Status.PENDING,
+            created_at__gte=earliest,
+            created_at__lte=latest,
+        )
+        .order_by("created_at")
+    )
+
+    stats = {
+        "total_checked": 0,
+        "paid": 0,
+        "failed": 0,
+        "still_pending": 0,
+        "errors": 0,
+    }
+
+    service = MonCashService()
+    log = logging.getLogger(__name__)
+
+    for payment in pending_payments:
+        stats["total_checked"] += 1
+        try:
+            confirmed = service.confirm_payment(payment.pk)
+            if confirmed.status == Payment.Status.PAID:
+                stats["paid"] += 1
+                log.info("Paiement %s synchronisé avec succès: PAID", payment.order_id)
+            elif confirmed.status == Payment.Status.FAILED:
+                stats["failed"] += 1
+                log.info("Paiement %s synchronisé: FAILED", payment.order_id)
+            else:
+                stats["still_pending"] += 1
+        except (MonCashError, MonetizationError, Exception) as exc:
+            log.error("Erreur de synchronisation MonCash pour le paiement %s: %s", payment.order_id, exc)
+            stats["errors"] += 1
+
+    return stats
+
+
+

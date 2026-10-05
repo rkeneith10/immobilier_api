@@ -42,3 +42,37 @@ class PublicationPaymentVerifyResponseSerializer(serializers.Serializer):
     )
 
 
+class MonCashWebhookPayloadSerializer(serializers.Serializer):
+    orderId = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="Identifiant de commande transmis à MonCash (camelCase)",
+    )
+    order_id = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="Identifiant de commande transmis à MonCash (snake_case)",
+    )
+    transactionId = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="Identifiant de transaction MonCash (camelCase)",
+    )
+    transaction_id = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="Identifiant de transaction MonCash (snake_case)",
+    )
+
+
+class MonCashWebhookResponseSerializer(serializers.Serializer):
+    detail = serializers.CharField(help_text="Message descriptif du résultat")
+    status = serializers.CharField(help_text="Statut actuel du paiement (PAID, PENDING, FAILED)")
+    order_id = serializers.CharField(help_text="Référence de commande MonCash")
+    payment_id = serializers.UUIDField(help_text="Identifiant UUID interne du paiement")
+    property_id = serializers.UUIDField(
+        required=False, allow_null=True, help_text="Identifiant de la propriété associée"
+    )
+
+
+
