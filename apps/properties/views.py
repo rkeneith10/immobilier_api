@@ -471,7 +471,7 @@ class PropertyViewSet(viewsets.ModelViewSet):
             # Idempotence: if existing pending payment already has provider token, return redirect URL
             if pending_payment and pending_payment.provider_payment_id:
                 token_age = (timezone.now() - pending_payment.created_at).total_seconds()
-                max_age = 600 if default_provider == "MONCASH" else 3600
+                max_age = 600  # 10 minutes max pour éviter de réutiliser des sessions expirées côté Kobara/MonCash
                 if token_age < max_age:
                     if default_provider == "MONCASH":
                         gateway_url = getattr(settings, "MONCASH_GATEWAY_URL", "").rstrip("/")
