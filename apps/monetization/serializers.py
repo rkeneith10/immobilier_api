@@ -21,24 +21,24 @@ class PublicationEligibilitySerializer(serializers.Serializer):
 class PublicationPaymentInitiateResponseSerializer(serializers.Serializer):
     payment_id = serializers.UUIDField(help_text="Identifiant unique du paiement interne")
     status = serializers.CharField(help_text="Statut actuel du paiement (ex: PENDING)")
-    order_id = serializers.CharField(help_text="Référence unique de commande transmise à MonCash")
+    order_id = serializers.CharField(help_text="Référence unique de commande transmise à la passerelle")
     amount = serializers.DecimalField(max_digits=12, decimal_places=2, help_text="Montant en gourdes (HTG)")
     currency = serializers.CharField(max_length=3, help_text="Devise du paiement (HTG)")
-    provider = serializers.CharField(help_text="Fournisseur de paiement (MONCASH)")
-    redirect_url = serializers.URLField(help_text="URL de paiement MonCash Gateway pour redirection de l’utilisateur")
+    provider = serializers.CharField(help_text="Fournisseur de paiement (KOBARA ou MONCASH)")
+    redirect_url = serializers.URLField(help_text="URL de paiement sécurisée pour redirection de l’utilisateur")
 
 
 class PublicationPaymentVerifyResponseSerializer(serializers.Serializer):
     payment_id = serializers.UUIDField(help_text="Identifiant unique du paiement interne")
     property_id = serializers.UUIDField(help_text="Identifiant unique de la propriété")
     status = serializers.CharField(help_text="Statut actuel du paiement (ex: PAID, PENDING, FAILED)")
-    order_id = serializers.CharField(help_text="Référence unique de commande transmise à MonCash")
+    order_id = serializers.CharField(help_text="Référence unique de commande")
     amount = serializers.DecimalField(max_digits=12, decimal_places=2, help_text="Montant en gourdes (HTG)")
     currency = serializers.CharField(max_length=3, help_text="Devise du paiement (HTG)")
-    provider = serializers.CharField(help_text="Fournisseur de paiement (MONCASH)")
+    provider = serializers.CharField(help_text="Fournisseur de paiement (KOBARA ou MONCASH)")
     paid_at = serializers.DateTimeField(allow_null=True, help_text="Date et heure de confirmation du paiement")
     provider_transaction_id = serializers.CharField(
-        allow_null=True, required=False, default=None, help_text="Numéro de transaction officiel MonCash"
+        allow_null=True, required=False, default=None, help_text="Numéro de transaction officiel de la passerelle"
     )
 
 
@@ -70,6 +70,21 @@ class MonCashWebhookResponseSerializer(serializers.Serializer):
     status = serializers.CharField(help_text="Statut actuel du paiement (PAID, PENDING, FAILED)")
     order_id = serializers.CharField(help_text="Référence de commande MonCash")
     payment_id = serializers.UUIDField(help_text="Identifiant UUID interne du paiement")
+    property_id = serializers.UUIDField(
+        required=False, allow_null=True, help_text="Identifiant de la propriété associée"
+    )
+
+
+class KobaraWebhookPayloadSerializer(serializers.Serializer):
+    event_type = serializers.CharField(help_text="Type d'événement Kobara (ex: payment.succeeded)")
+    data = serializers.DictField(help_text="Données de l'événement Kobara")
+
+
+class KobaraWebhookResponseSerializer(serializers.Serializer):
+    detail = serializers.CharField(help_text="Message descriptif du résultat")
+    status = serializers.CharField(required=False, help_text="Statut actuel du paiement (PAID, PENDING, FAILED)")
+    order_id = serializers.CharField(required=False, help_text="Référence de commande")
+    payment_id = serializers.UUIDField(required=False, help_text="Identifiant UUID interne du paiement")
     property_id = serializers.UUIDField(
         required=False, allow_null=True, help_text="Identifiant de la propriété associée"
     )

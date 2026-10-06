@@ -31,6 +31,7 @@ def moncash_test_settings(settings):
     settings.MONCASH_CLIENT_SECRET = "test-client-secret"
     settings.MONCASH_API_URL = "https://sandbox.moncashbutton.digicelgroup.com/Api"
     settings.MONCASH_GATEWAY_URL = "https://sandbox.moncashbutton.digicelgroup.com/Moncash-middleware"
+    settings.DEFAULT_PAYMENT_PROVIDER = "MONCASH"
 
 
 

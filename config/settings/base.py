@@ -175,4 +175,12 @@ MONCASH_GATEWAY_URL = os.getenv(
 )
 MONCASH_TIMEOUT_SECONDS = int(os.getenv("MONCASH_TIMEOUT_SECONDS", "15"))
 
+# Kobara Payment Gateway configuration
+KOBARA_SECRET_KEY = os.getenv("KOBARA_SECRET_KEY", "")
+KOBARA_WEBHOOK_SECRET = os.getenv("KOBARA_WEBHOOK_SECRET", "")
+KOBARA_PROVIDER = os.getenv("KOBARA_PROVIDER", "kobara")
+KOBARA_BASE_URL = os.getenv("KOBARA_BASE_URL", "https://api.kobara.app/v1")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+DEFAULT_PAYMENT_PROVIDER = os.getenv("DEFAULT_PAYMENT_PROVIDER", "KOBARA").upper()
+
 

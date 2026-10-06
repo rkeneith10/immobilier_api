@@ -9,9 +9,21 @@ from rest_framework.response import Response
 from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.db.models import Q
+from django.utils import timezone
 from django_filters.rest_framework import DjangoFilterBackend
 
-from apps.monetization.moncash_service import MonCashError, MonCashService
+from apps.monetization.kobara_service import (
+    KobaraAuthError,
+    KobaraConfigError,
+    KobaraError,
+    KobaraService,
+)
+from apps.monetization.moncash_service import (
+    MonCashAuthError,
+    MonCashConfigError,
+    MonCashError,
+    MonCashService,
+)
 from apps.monetization.models import Payment
 from apps.monetization.serializers import (
     PublicationEligibilitySerializer,
@@ -22,6 +34,7 @@ from apps.monetization.services import (
     MonetizationError,
     check_publication_eligibility,
     create_property_publication_payment,
+    get_payment_service,
     get_publication_price,
 )
 from .filters import AmenityFilter, PropertyFilter, PropertyTypeFilter
@@ -387,10 +400,10 @@ class PropertyViewSet(viewsets.ModelViewSet):
 
     @extend_schema(
         tags=["Properties"],
-        summary="Initialiser un paiement MonCash pour la publication d’une annonce",
+        summary="Initialiser un paiement de publication d’annonce",
         description=(
-            "Vérifie l’éligibilité de la propriété et génère une session de paiement MonCash. "
-            "Renvoie l’URL de redirection Gateway vers laquelle rediriger l’utilisateur. "
+            "Vérifie l’éligibilité de la propriété et génère une session de paiement sécurisée (Kobara / MonCash). "
+            "Renvoie l’URL de redirection vers laquelle rediriger l’utilisateur. "
             "Si la propriété est déjà payée ou bénéficie d’une publication gratuite, la création est refusée."
         ),
         request=None,
@@ -400,6 +413,7 @@ class PropertyViewSet(viewsets.ModelViewSet):
             401: OpenApiTypes.OBJECT,
             403: OpenApiTypes.OBJECT,
             404: OpenApiTypes.OBJECT,
+            500: OpenApiTypes.OBJECT,
             502: OpenApiTypes.OBJECT,
         },
     )
@@ -411,6 +425,16 @@ class PropertyViewSet(viewsets.ModelViewSet):
     )
     def initiate_publication_payment(self, request, pk=None):
         from django.conf import settings
+
+        requested_provider = (
+            request.data.get("provider")
+            if isinstance(request.data, dict)
+            else None
+        ) or request.query_params.get("provider")
+
+        default_provider = (
+            requested_provider or getattr(settings, "DEFAULT_PAYMENT_PROVIDER", "KOBARA")
+        ).upper()
 
         # 1. Fetch object and verify eligibility within a short database transaction
         with transaction.atomic():
@@ -433,11 +457,11 @@ class PropertyViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-            # Check for an existing PENDING payment for this property
+            # Check for an existing PENDING payment for this property with active provider
             pending_payment = (
                 Payment.objects.filter(
                     property=property_obj,
-                    provider="MONCASH",
+                    provider=default_provider,
                     status=Payment.Status.PENDING,
                 )
                 .order_by("-created_at")
@@ -446,45 +470,65 @@ class PropertyViewSet(viewsets.ModelViewSet):
 
             # Idempotence: if existing pending payment already has provider token, return redirect URL
             if pending_payment and pending_payment.provider_payment_id:
-                gateway_url = getattr(settings, "MONCASH_GATEWAY_URL", "").rstrip("/")
-                redirect_url = f"{gateway_url}/Payment/Redirect?token={pending_payment.provider_payment_id}"
-                data = {
-                    "payment_id": pending_payment.pk,
-                    "status": pending_payment.status,
-                    "order_id": pending_payment.order_id,
-                    "amount": pending_payment.amount,
-                    "currency": pending_payment.currency,
-                    "provider": pending_payment.provider,
-                    "redirect_url": redirect_url,
-                }
-                return Response(
-                    PublicationPaymentInitiateResponseSerializer(data).data,
-                    status=status.HTTP_200_OK,
-                )
+                token_age = (timezone.now() - pending_payment.created_at).total_seconds()
+                max_age = 600 if default_provider == "MONCASH" else 3600
+                if token_age < max_age:
+                    if default_provider == "MONCASH":
+                        gateway_url = getattr(settings, "MONCASH_GATEWAY_URL", "").rstrip("/")
+                        redirect_url = f"{gateway_url}/Payment/Redirect?token={pending_payment.provider_payment_id}"
+                    else:
+                        redirect_url = f"https://kobara.app/pay/{pending_payment.provider_payment_id}"
+
+                    data = {
+                        "payment_id": pending_payment.pk,
+                        "status": pending_payment.status,
+                        "order_id": pending_payment.order_id,
+                        "amount": pending_payment.amount,
+                        "currency": pending_payment.currency,
+                        "provider": pending_payment.provider,
+                        "redirect_url": redirect_url,
+                    }
+                    return Response(
+                        PublicationPaymentInitiateResponseSerializer(data).data,
+                        status=status.HTTP_200_OK,
+                    )
+                else:
+                    pending_payment.status = Payment.Status.FAILED
+                    pending_payment.save(update_fields=("status", "updated_at"))
+                    pending_payment = None
 
             if pending_payment is None:
                 amount = get_publication_price()
                 currency = "HTG"
                 payment = create_property_publication_payment(
                     property_obj=property_obj,
-                    provider="MONCASH",
+                    provider=default_provider,
                     amount=amount,
                     currency=currency,
                 )
             else:
                 payment = pending_payment
 
-        # 2. Call MonCash provider OUTSIDE the database transaction
-        service = MonCashService()
+        # 2. Call provider service OUTSIDE the database transaction
+        service = get_payment_service(payment.provider)
         try:
             checkout = service.start_payment(payment.pk)
-        except (MonCashError, MonetizationError) as exc:
+        except (KobaraConfigError, MonCashConfigError) as exc:
             import logging
             logging.getLogger(__name__).error(
-                "Échec de l’initialisation MonCash pour le paiement %s: %s", payment.order_id, exc
+                "Configuration manquante pour le provider %s: %s", payment.provider, exc
             )
             return Response(
-                {"detail": "Impossible d’initialiser le paiement auprès de MonCash. Veuillez réessayer ultérieurement."},
+                {"detail": "La passerelle de paiement n'est pas correctement configurée. Veuillez contacter le support."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+        except (KobaraError, MonCashError, MonetizationError) as exc:
+            import logging
+            logging.getLogger(__name__).error(
+                "Échec de l’initialisation %s pour le paiement %s: %s", payment.provider, payment.order_id, exc
+            )
+            return Response(
+                {"detail": f"Impossible d’initialiser le paiement auprès de {payment.provider}. Veuillez réessayer ultérieurement."},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 
@@ -504,9 +548,9 @@ class PropertyViewSet(viewsets.ModelViewSet):
 
     @extend_schema(
         tags=["Properties"],
-        summary="Vérifier et confirmer le paiement de publication MonCash",
+        summary="Vérifier et confirmer le paiement de publication",
         description=(
-            "Vérifie auprès de l’API MonCash le statut réel du paiement associé à cette propriété. "
+            "Vérifie auprès de la passerelle de paiement le statut réel du paiement associé à cette propriété. "
             "Si le paiement est confirmé, son statut passe à PAID de manière idempotente et atomique."
         ),
         request=None,
@@ -592,17 +636,17 @@ class PropertyViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        # 3. Call MonCash provider outside database transaction
-        service = MonCashService()
+        # 3. Call provider service outside database transaction
+        service = get_payment_service(pending_payment.provider)
         try:
             confirmed_payment = service.confirm_payment(pending_payment.pk)
-        except (MonCashError, MonetizationError) as exc:
+        except (KobaraError, MonCashError, MonetizationError) as exc:
             import logging
             logging.getLogger(__name__).error(
-                "Échec de la vérification MonCash pour le paiement %s: %s", pending_payment.order_id, exc
+                "Échec de la vérification %s pour le paiement %s: %s", pending_payment.provider, pending_payment.order_id, exc
             )
             return Response(
-                {"detail": "Impossible de vérifier le paiement auprès de MonCash. Veuillez réessayer ultérieurement."},
+                {"detail": f"Impossible de vérifier le paiement auprès de {pending_payment.provider}. Veuillez réessayer ultérieurement."},
                 status=status.HTTP_502_BAD_GATEWAY,
             )
 

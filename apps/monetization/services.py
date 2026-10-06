@@ -489,8 +489,22 @@ def sync_all_pending_moncash_payments(*, max_age_hours=48, min_age_seconds=30) -
         except (MonCashError, MonetizationError, Exception) as exc:
             log.error("Erreur de synchronisation MonCash pour le paiement %s: %s", payment.order_id, exc)
             stats["errors"] += 1
-
     return stats
+
+
+def get_payment_service(provider: str | None = None) -> PaymentService:
+    """Return the PaymentService adapter corresponding to the requested or default provider."""
+    from django.conf import settings
+
+    provider_name = (provider or getattr(settings, "DEFAULT_PAYMENT_PROVIDER", "KOBARA")).upper()
+    if provider_name == "KOBARA":
+        from .kobara_service import KobaraService
+        return KobaraService()
+    elif provider_name == "MONCASH":
+        from .moncash_service import MonCashService
+        return MonCashService()
+    else:
+        raise MonetizationError(f"Fournisseur de paiement non supporté: {provider_name}")
 
 
 

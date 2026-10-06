@@ -3,6 +3,7 @@ from django.urls import include, path
 from django.http import JsonResponse
 from drf_spectacular.views import SpectacularAPIView, SpectacularRedocView, SpectacularSwaggerView
 from apps.properties.analytics_views import OwnerPropertyAnalyticsView
+from apps.monetization.views import KobaraWebhookView
 
 
 def health_check(request):
@@ -26,6 +27,7 @@ urlpatterns = [
     path("api/notifications/", include("apps.notifications.urls")),
     path("api/reports/", include("apps.interactions.report_urls")),
     path("api/moncash/", include("apps.monetization.urls")),
+    path("api/webhooks/kobara/", KobaraWebhookView.as_view(), name="kobara-webhook"),
     path("api/admin/", include("apps.common.admin_urls")),
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
     path("api/docs/", SpectacularSwaggerView.as_view(url_name="schema"), name="swagger-ui"),
