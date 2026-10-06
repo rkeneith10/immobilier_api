@@ -477,7 +477,7 @@ class PropertyViewSet(viewsets.ModelViewSet):
                         gateway_url = getattr(settings, "MONCASH_GATEWAY_URL", "").rstrip("/")
                         redirect_url = f"{gateway_url}/Payment/Redirect?token={pending_payment.provider_payment_id}"
                     else:
-                        redirect_url = f"https://kobara.app/pay/{pending_payment.provider_payment_id}"
+                        redirect_url = f"https://pay.kobara.app/checkout/{pending_payment.provider_payment_id}"
 
                     data = {
                         "payment_id": pending_payment.pk,
